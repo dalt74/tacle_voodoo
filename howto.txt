@@ -1,0 +1,74 @@
+0. Build
+   # go build -o tacle_voodoo tacle_voodoo.go
+
+1. Retrieve the list of pools with command:
+   # ceph osd lspools
+   and write pools list in th file pools.cfg
+
+2. Mount all OSD as fuse with ceph-objectstore-tool:
+   # ceph-objectstore-tool --op fuse --mountpoint /mnt/osd-0 --data-path /var/lib/ceph/osd/ceph-0/
+   # ceph-objectstore-tool --op fuse --mountpoint /mnt/osd-1 --data-path /var/lib/ceph/osd/ceph-1/
+   # ceph-objectstore-tool --op fuse --mountpoint /mnt/osd-2 --data-path /var/lib/ceph/osd/ceph-2/
+
+3. Write OSD location into osd.cfg (the sampel file is included too)
+   0 filesystem /mnt/osd-0
+   1 filesystem /mnt/osd-1
+   2 filesystem /mnt/osd-2
+
+4. Scan mounted OSD for the objects.
+   # tacle_voodoo scan csv:/mnt/osd-0-objlist 0=/mnt/osd-0
+   # tacle_voodoo scan csv:/mnt/osd-1-objlist 1=/mnt/osd-1
+   # tacle_voodoo scan csv:/mnt/osd-2-objlist 2=/mnt/osd-2
+   You can also scan multiple OSDs into one file:
+   # tacle_voodoo scan csv:/mnt/all-objects 0=/mnt/osd-0 1=/mnt/osd-1 2=/mnt/osd-2
+   
+4. List volumes found:
+   # tacle_voodoo list_volumes <poolname> \
+   >    csv:/mnt/osd-0-objlist \
+   >    csv:/mnt/osd-1-objlist \
+   >    csv:/mnt/osd-2-objlist
+
+5. Request volumes info:
+   # tacle_voodoo info <poolname> <rbdname> \
+   >    csv:/mnt/osd-0-objlist \
+   >    csv:/mnt/osd-1-objlist \
+   >    csv:/mnt/osd-2-objlist
+
+6. Extract volume:
+   # tacle_voodoo extract <poolname> <rbdname>=<targetfile> \
+   >    csv:/mnt/osd-0-objlist \
+   >    csv:/mnt/osd-1-objlist \
+   >    csv:/mnt/osd-2-objlist
+
+To perfrom all actions except the scan, the tacle_voodoo requires
+access to all OSDs mounted as fuse.
+
+If your dead cluster has a lot of OSD and you can't mount'em all
+on the single node, you may use tacle_voodoo HTTP data server:
+
+1. Mount some directory on th all OSD hosts via NFS
+
+2. Run tacle_voodoo scan .. on each host and specify store on the NFS mountpoint:
+   host-ALPHA # tacle_voodoo scan csv:/nfs/ALPHA-objects 0=/mnt/osd-0 1=/mnt/osd-1
+   host-BETA  # tacle_voodoo scan csv:/nfs/BETA-objects 2=/mnt/osd-2 3=/mnt/osd-3
+
+3. Run tacle_voodoo HTTP data server with comand:
+   host-ALPHA # tacle_voodoo serve 9000=/mnt/osd-0 9001=/mnt/osd-1
+   host-BETA  # tacle_voodoo serve 9002=/mnt/osd-2 9003=/mnt/osd-3
+   This will run HTTP gateway to access OSD data over network
+
+4. Specify OSD HTTP servers in osd.cfg - lookup the sample in http_osd.cfg file:
+   0 http http://host-ALPHA:9000/
+   1 http http://host-ALPHA:9001/
+   2 http http://host-BETA:9002/
+   3 http http://host-BETA:9003/
+
+5. Run tacle_voodoo for the data access:
+   # tacle_voodoo extract \
+   > poolname image=recovered-image-filename.raw \
+   > csv:/nfs/ALPHA-objects csv:/nfs/BETA-objects 
+   And the tacle_voodoo will retrieve data via HTTP form the
+   multiple hosts based on the URLs in osd.cfg
+
+To use non-default config files (osd.cfg / pools.cfg) sepcify
+filenames with env vars OSD_CONFIG and POOL_CONFIG.
