@@ -81,6 +81,18 @@ type AtomicOperation struct {
 	object_offset int64
 }
 
+func (op *AtomicOperation) ToString() string {
+	if len(op.objects) > 0 {
+		snap_ref := max(op.objects[0].snap_ref, 0)
+		return fmt.Sprintf(
+			"%s#%d range [%d - %d]",
+			op.objects[0].name, snap_ref, op.object_offset, op.object_offset+op.size-1,
+		)
+	} else {
+		return fmt.Sprintf("zero %d bytes", op.size)
+	}
+}
+
 func NewAtomicOperation(
 	address []*ObjectAddress,
 	object_offset int64,
@@ -189,12 +201,10 @@ func Debugf(f string, args ...any) {
 
 func GetBlockOps(src DataSource, offset int64, size int64, ctx *FullContext) ([]*AtomicOperation, error) {
 	ret := make([]*AtomicOperation, 0)
-	gran := GetGranularity(src)
 	blocksize := src.BlockSize()
 	obj_name := fmt.Sprintf("%s.%016x", src.GetBaseName(), offset/blocksize)
 	snap_ref := src.GetSnapRef()
 	if offset > src.GetSize() {
-		Debugf("In %s data from %dM for %dM", src.GetName(), offset/MB, size/MB)
 		ret = append(ret, NewAtomicOperation(nil, 0, size))
 		return ret, nil
 	}
@@ -212,31 +222,27 @@ func GetBlockOps(src DataSource, offset int64, size int64, ctx *FullContext) ([]
 				return ret, nil
 			}
 		} else {
-			Debugf("In %s data from %dM for %dM", src.GetName(), offset/MB, size/MB)
 			ret = append(ret, NewAtomicOperation(nil, 0, size))
 			return ret, nil
 		}
 	}
 	object_size := objlist[0].size
-	delta := offset % gran
+	delta := offset % object_size
 	usable := object_size - delta
 	to_use := min(usable, size)
 	if to_use > 0 {
 		ret = append(ret, NewAtomicOperation(objlist, delta, to_use))
-		Debugf("Found data for %s in %s delta %dM for %dM", src.GetName(), objlist[0].name, delta/MB, to_use/MB)
 		size -= to_use
 		offset += to_use
 	}
 	if size > 0 {
 		if src.GetParent() != nil {
-			Debugf("In %s object %s has only %dM, gone to parent for %dM", src.GetName(), objlist[0].name, to_use/MB, size/MB)
 			if ops, err := GetBlockOps(src.GetParent(), offset, size, ctx); err != nil {
 				return nil, err
 			} else {
 				ret = append(ret, ops...)
 			}
 		} else {
-			Debugf("In %s no data from %dM for %dM", src.GetName(), offset/MB, size/MB)
 			ret = append(ret, NewAtomicOperation(objlist, 0, size))
 		}
 	}
@@ -260,6 +266,12 @@ func GetPlan2(src DataSource, ctx *FullContext) ([]*AtomicOperation, error) {
 		}
 		offset += opsize
 	}
+	sum := int64(0)
+	for _, op := range ret {
+		Debugf("Entry: %s", op.ToString())
+		sum += op.size
+	}
+	Debugf("Total size: %dMB", sum/MB)
 	return ret, nil
 }
 
@@ -1251,7 +1263,7 @@ func ReadVolumeChunks(src DataSource, ctx *FullContext, wt *WriteTask) error {
 				var data []byte
 				if data, err = ctx.GetData(pe.objects); err != nil {
 					break
-				} else if err = wt.Write(data); err != nil {
+				} else if err = wt.Write(data[pe.object_offset : pe.object_offset+pe.size]); err != nil {
 					break
 				}
 			} else {
