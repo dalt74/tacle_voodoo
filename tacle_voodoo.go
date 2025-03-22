@@ -227,9 +227,13 @@ func GetBlockOps(src DataSource, offset int64, size int64, ctx *FullContext) ([]
 		}
 	}
 	object_size := objlist[0].size
-	delta := offset % object_size
+	delta := offset % src.BlockSize()
 	usable := object_size - delta
 	to_use := min(usable, size)
+	Debugf(
+		"object %s#%d(%d) offset %d size %d delta %d usable %d to_use %d",
+		objlist[0].name, objlist[0].snap_ref, object_size, offset, size, delta, usable, to_use,
+	)
 	if to_use > 0 {
 		ret = append(ret, NewAtomicOperation(objlist, delta, to_use))
 		size -= to_use
