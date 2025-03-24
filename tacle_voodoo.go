@@ -34,7 +34,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -79,6 +78,24 @@ type AtomicOperation struct {
 	objects       []*ObjectAddress
 	size          int64
 	object_offset int64
+}
+
+// For OLDEST go's
+func max(a int64, b int64) int64 {
+	if a > b {
+		return a
+	} else {
+		return b
+	}
+}
+
+// For OLDEST go's
+func min(a int64, b int64) int64 {
+	if a < b {
+		return a
+	} else {
+		return b
+	}
 }
 
 func (op *AtomicOperation) ToString() string {
@@ -373,7 +390,7 @@ func ParseObjectByName(pool int64, pg int, basename string) (*ObjectAddress, err
 func ByteSliceToInt64(data []byte) int64 {
 	ret := int64(0)
 	scale := int64(1)
-	for i := range 8 {
+	for i := 0; i < 8; i++ {
 		ret += scale * int64(data[i])
 		if i < 7 {
 			scale = scale * 256
@@ -385,7 +402,7 @@ func ByteSliceToInt64(data []byte) int64 {
 func ByteSliceToInt(data []byte) int {
 	ret := 0
 	scale := 1
-	for i := range 4 {
+	for i := 0; i < 4; i++ {
 		ret += scale * int(data[i])
 		if i < 3 {
 			scale = scale * 256
@@ -486,6 +503,19 @@ func (*GenericObjectStore) ListObjects(pool int64, name_or_prefix string, sugges
 	return nil, not_impl
 }
 
+func SortFunc(a []*ObjectAddress, cfunc func(l *ObjectAddress, r *ObjectAddress) int) {
+	for i := 0; i < len(a)-1; i++ {
+		for j := i + 1; j < len(a); j++ {
+			x := cfunc(a[i], a[j])
+			if x > 0 {
+				v := a[i]
+				a[i] = a[j]
+				a[j] = v
+			}
+		}
+	}
+}
+
 func FindObject(store ObjectLister, pool int64, name string, snapref int64) ([]*ObjectAddress, error) {
 	if matched, err := store.ListObjects(pool, name, false); err != nil {
 		return nil, err
@@ -508,7 +538,7 @@ func FindObject(store ObjectLister, pool int64, name string, snapref int64) ([]*
 				}
 			}
 		}
-		slices.SortFunc(all, ObjectCompare)
+		SortFunc(all, ObjectCompare)
 		if len(all) > 1 {
 			maxver := all[0].version
 			isnapref := all[0].snap_ref
@@ -1358,6 +1388,15 @@ func GetVolumeByName(poolid int64, name string, ctx *FullContext) (*VolumeListEn
 	return nil, not_found
 }
 
+func Contains(s []string, v string) bool {
+	for _, i := range s {
+		if i == v {
+			return true
+		}
+	}
+	return false
+}
+
 func GetVolume(entry *VolumeListEntry, ctx *FullContext) (*Volume, error) {
 	if ctx == nil {
 		return nil, fmt.Errorf("null context")
@@ -1405,7 +1444,7 @@ func GetVolume(entry *VolumeListEntry, ctx *FullContext) (*Volume, error) {
 				}
 			}
 		}
-		if slices.Contains(all_omaps, "parent") {
+		if Contains(all_omaps, "parent") {
 			if pdata, err := ctx.GetOmap(objlocs, "parent"); err == nil {
 				if parent, err := ParseParent(pdata); err != nil {
 					return nil, err
