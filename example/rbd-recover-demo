@@ -1,0 +1,172 @@
+#!/bin/bash
+#
+# Sample script to test
+# Expected configuration:
+#   pool name: rbd
+#   expected sizing: 2/1
+#
+
+last_survivor=0 # OSD being shutdown last
+first_victim=1  # OSD being shutdown first
+
+function resetfailed() {
+    if systemctl reset-failed $1 2>/dev/null ; then
+        echo "Resetting errors for $1 - OK"
+    else
+        echo "Resetting errors for $1 - ignored"
+    fi
+}
+
+function act() {
+    echo "DOING: $@"
+    if ! $@ ; then
+        echo FAILED
+        exit 1
+    fi
+}
+
+function actbg() {
+    echo "BACKGROUND: $@"
+    $@ &
+}
+
+function actlog() {
+    fn="$1"
+    shift
+    echo "$@ | tee $fn"
+    if ! $@ | tee $fn ; then
+        echo FAILED
+        exit 1
+    fi
+}
+
+function tell() {
+    echo
+    read -p "Next is: $@ " _x
+    echo
+}
+
+voodoo="/home/MeetupShow/tacle_voodoo"
+direct="dd of=direct bs=1024k status=none conv=nocreat if=/dev/urandom"
+base_dev="/dev/rbd/rbd/base"
+clone1_dev="/dev/rbd/rbd/clone1"
+clone2_dev="/dev/rbd/rbd/clone2"
+clone3_dev="/dev/rbd/rbd/clone3"
+
+tell "Creating temp mountpoints"
+act mkdir -p /mnt/osd-$first_victim /mnt/osd-$last_survivor
+
+tell "Testing $voodoo exists and executable"
+act test -x $voodoo
+
+tell "Creating image rbd/base size 20M order 20/1M"
+act rbd create rbd/base --object-size 1024K --size 20M
+act rbd map rbd/base
+
+tell "Write to base"
+act $direct if=/dev/urandom of=$base_dev count=20
+
+tell "Creating snap rbd/base@snap1"
+act rbd snap create rbd/base@snap1
+act rbd snap protect rbd/base@snap1
+
+tell "Write more into base"
+act $direct of=$base_dev count=4 seek=3
+
+tell "Creating snap rbd/base@snap2"
+act rbd snap create rbd/base@snap2
+act rbd snap protect rbd/base@snap2
+
+tell "Create clone rbd/clone1 from rbd/base@snap1"
+act rbd clone rbd/base@snap1 clone1
+act rbd map rbd/clone1
+
+tell "Write to clone1"
+act $direct of=$clone1_dev seek=3 count=5
+
+tell "Create clone rbd/clone2 from rbd/base@snap2"
+act rbd clone rbd/base@snap2 clone2
+act rbd map rbd/clone2
+
+tell "Write to clone2"
+act $direct of=$clone2_dev seek=4 count=7
+
+tell "Create clone rbd/clone3 from rbd/base@snap2 with changed order/size"
+act rbd clone rbd/base@snap2 clone3 --object-size 2M
+act rbd resize --size 29M rbd/clone3
+act rbd map rbd/clone3
+
+tell "Write to clone3"
+act $direct of=$clone3_dev seek=1 count=15
+act $direct of=$clone3_dev seek=25 count=2
+
+tell "Stop OSD.$first_victim"
+act systemctl stop ceph-osd@$first_victim
+
+tell "Overwrite clones"
+act $direct of=$clone1_dev seek=4 count=3
+act $direct of=$clone2_dev seek=6 count=2
+act $direct of=$clone3_dev seek=1 count=15
+act $direct of=$clone3_dev seek=26 count=1
+
+tell "Taking checksums"
+actlog /home/MeetupShow/original-md5 md5sum /dev/rbd/rbd/*
+
+tell "Unmapping all"
+act rbd unmap /dev/rbd/rbd/clone3
+act rbd unmap /dev/rbd/rbd/clone2
+act rbd unmap /dev/rbd/rbd/clone1
+act rbd unmap /dev/rbd/rbd/base
+
+tell "Stop OSD.$last_survivor"
+act systemctl stop ceph-osd@$last_survivor
+
+tell "Mapping OSD to explore"
+actbg ceph-objectstore-tool --no-mon-config --data-path /var/lib/ceph/osd/ceph-$first_victim/ --op fuse --mountpoint /mnt/osd-$first_victim
+actbg ceph-objectstore-tool --no-mon-config --data-path /var/lib/ceph/osd/ceph-$last_survivor/ --op fuse --mountpoint /mnt/osd-$last_survivor
+sleep 5
+echo
+echo
+
+tell "Collecting data"
+act $voodoo scan csv:/home/MeetupShow/objects $last_survivor=/mnt/osd-$last_survivor $first_victim=/mnt/osd-$first_victim
+
+tell "See OSD an POOL maps"
+act cat osd.cfg
+act cat pools.cfg
+
+tell "Watch volumes"
+act $voodoo list_volumes rbd csv:/home/MeetupShow/objects
+
+tell "Extract volumes"
+for name in base clone1 clone2 clone3 ; do
+    act $voodoo extract rbd $name=$name.img csv:/home/MeetupShow/objects
+done
+
+tell "Listing recovered"
+act ls -l /home/MeetupShow/*.img
+
+tell "Checking recovered"
+actlog /home/MeetupShow/recovered-md5 md5sum /home/MeetupShow/*.img
+
+tell "Unmounting stopped OSD"
+act umount /mnt/osd-1
+act umount /mnt/osd-0
+
+tell "Starting OSDs"
+for n in $last_survivor $first_victim ; do
+    resetfailed ceph-osd@$n
+    act systemctl start ceph-osd@$n
+done
+
+tell "Cleaning up"
+act rbd rm rbd/clone3
+act rbd rm rbd/clone2
+act rbd rm rbd/clone1
+act rbd snap unprotect rbd/base@snap2
+act rbd snap unprotect rbd/base@snap1
+act rbd snap rm rbd/base@snap2
+act rbd snap rm rbd/base@snap1
+act rbd rm rbd/base
+
+echo I get off...
